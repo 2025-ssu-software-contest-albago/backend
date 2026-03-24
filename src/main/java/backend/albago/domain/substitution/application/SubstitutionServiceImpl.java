@@ -10,6 +10,7 @@ import backend.albago.domain.schedule.domain.repository.TeamScheduleRepository;
 import backend.albago.domain.substitution.converter.SubstitutionConverter;
 import backend.albago.domain.substitution.domain.entity.SubstitutionRequest;
 import backend.albago.domain.substitution.domain.repository.SubstitutionRequestRepository;
+import backend.albago.domain.substitution.dto.SubstitutionQueueMessage;
 import backend.albago.domain.substitution.dto.SubstitutionRequestDTO;
 import backend.albago.domain.substitution.dto.SubstitutionResponseDTO;
 import backend.albago.domain.substitution.exception.SubstitutionException;
@@ -42,6 +43,7 @@ public class SubstitutionServiceImpl implements SubstitutionService {
     private final TeamMemberRepository teamMemberRepository;
     private final PersonalScheduleRepository personalScheduleRepository;
     private final TeamScheduleRepository teamScheduleRepository;
+    private final SubstitutionQueueService substitutionQueueService;
 
     @Override
     @Transactional
@@ -72,7 +74,21 @@ public class SubstitutionServiceImpl implements SubstitutionService {
             throw new SubstitutionException(ErrorStatus.INVALID_SUBSTITUTION_TIME);
         }
 
-        SubstitutionRequest newRequest = SubstitutionRequest.builder()
+        // 1. DB에 직접 저장하지 않고 Queue에 넣을 메시지 생성
+        SubstitutionQueueMessage queueMessage = SubstitutionQueueMessage.builder()
+                .teamId(teamId)
+                .requesterId(requester.getId())
+                .substituteId(substitute != null ? substitute.getId() : null)
+                .timeRangeStart(requestDTO.getTimeRangeStart())
+                .timeRangeEnd(requestDTO.getTimeRangeEnd())
+                .build();
+
+        // 2. Redis Queue로 데이터 비동기 적재 (여기서 빠른 응답 반환)
+        substitutionQueueService.enqueueSubstitutionRequest(queueMessage);
+
+        // 3. 비동기 처리이므로 실제 DB PK(id)는 아직 없음. 클라이언트에게 임시 응답을 위한 가짜 엔티티 생성
+        SubstitutionRequest tempRequest = SubstitutionRequest.builder()
+                .id(-1L) // 비동기 접수 상태를 나타내는 임시 ID (프론트에서 -1이면 '처리중'으로 인지하도록 구성)
                 .team(team)
                 .requester(requester)
                 .substitute(substitute)
@@ -81,9 +97,7 @@ public class SubstitutionServiceImpl implements SubstitutionService {
                 .status(RequestStatus.PENDING)
                 .build();
 
-        newRequest = substitutionRequestRepository.save(newRequest);
-
-        return SubstitutionConverter.toCreateSubstitutionResult(newRequest);
+        return SubstitutionConverter.toCreateSubstitutionResult(tempRequest);
     }
 
     @Override
